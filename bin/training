@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+
+DOTFILE='.javatraining'
+DEFAULT_DOTFILE = {
+}
+
+import collections
+import logging
+import json
+import os
+import sys
+import argparse
+
+log = logging.Logger(__name__)
+
+AgendaEntry = collections.namedtuple(
+    'AgendaEntry',
+    ['id', 'category', 'category_id', 'path']
+)
+
+class Environment:
+    def __init__(self, **kw):
+        # root of the project
+        self.root = kw['root']
+        # path to active configuration file
+        self.dotfile = kw['dotfile']
+        # path to active configuration file
+        self.agendafile = kw['agendafile']
+        # the current ordered agenda
+        self.agenda = []
+        # if the environment has been modified
+        self.modified = kw['modified']
+        # completed exercises
+        self.completed = kw['completed']
+
+    def next_id(self, next_id):
+        if next_id is not None:
+            return next_id
+
+        for entry in self.agenda:
+            if entry.id not in self.completed:
+                return entry.id
+
+        raise Exception('No unfinished items on the agenda!')
+
+    def to_config(self):
+        return {
+            'completed': list(self.completed)
+        }
+
+def agenda(ns):
+    e = ns.e
+
+    print('NOTE: * = finished')
+    print('')
+
+    current_category = None
+
+    for entry in e.agenda:
+        if current_category != entry.category:
+            print('{}/'.format(entry.category))
+            current_category = entry.category
+
+        print('  {}{}'.format(
+            entry.category_id, ' *' if entry.id in e.completed else ''
+        ))
+
+def init(ns):
+    id = ns.id
+
+    # next item on agenda
+    if id is None:
+        id = ns.e.next_id(ns.id)
+
+    print('Initializing: {}'.format(id))
+
+def setup_parser():
+    root_parser = argparse.ArgumentParser()
+    root_parser.set_defaults(action=init)
+
+    subparsers = root_parser.add_subparsers(help='Sub-command to run')
+
+    init_parser = subparsers.add_parser(
+        'init', help='Initialize an exercise'
+    )
+    init_parser.set_defaults(action=init)
+    init_parser.add_argument(
+        'id', nargs='?', default=None, help=(
+            'Specify exercise ID to initialize ' +
+            '(default: next on the agenda)'
+        )
+    )
+
+    agenda_parser = subparsers.add_parser('agenda', help='Print the current agenda')
+    agenda_parser.set_defaults(action=agenda)
+
+    return root_parser
+
+def load_agenda(root, f):
+    """
+    Load the agenda, as a list of ordered directories.
+    """
+
+    for category in f:
+        category = category.strip()
+
+        if category.startswith('#'):
+            continue
+
+        path = os.path.realpath(os.path.join(root, category))
+
+        if not os.path.isdir(path):
+            raise Exception('no such directory: ' + path)
+
+        for exercise in sorted(os.listdir(path)):
+            if exercise[2] == '-' and exercise.endswith('.md'):
+                category_id = exercise[3:-3]
+
+                yield AgendaEntry(
+                    id='{}/{}'.format(category, category_id),
+                    category=category,
+                    category_id=category_id,
+                    path=os.path.join(path, exercise)
+                )
+
+def setup_env():
+    root = os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[0])))
+
+    root = os.path.dirname(os.path.dirname(sys.argv[0]))
+    dotfile = os.path.join(os.path.expanduser('~'), DOTFILE)
+    agendafile = os.path.join(root, 'agenda')
+
+    e = Environment(
+        root=root,
+        dotfile=dotfile,
+        agendafile=agendafile,
+        completed=set([]),
+        modified=not os.path.isfile(dotfile),
+        agenda=[]
+    )
+
+    with open(e.dotfile, 'r') as f:
+        current = json.load(f)
+        e.completed = set(current.get('completed', []))
+
+    with open(e.agendafile, 'r') as f:
+        e.agenda = list(load_agenda(root, f))
+
+    return e
+
+def teardown_env(e):
+    if e.modified:
+        log.info('Writing {}', e.dotfile)
+
+        with open(e.dotfile, 'w') as f:
+            json.dump(e.to_config(), f)
+
+def entry():
+    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+
+    e = setup_env()
+    ns = setup_parser().parse_args()
+    ns.e = e
+    ns.action(ns)
+    teardown_env(e)
+
+    sys.exit(0)
+
+if __name__ == "__main__":
+    entry()
